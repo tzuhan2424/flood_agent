@@ -217,3 +217,94 @@ class SentinelHubClient:
         else:
             # Default: just take first N
             return images[:limit]
+
+    def fetch_image(
+        self,
+        bbox: list[float],
+        date: str,
+        width: int = 512,
+        height: int = 512
+    ) -> bytes:
+        """
+        Fetch Sentinel-2 imagery (6 bands for Prithvi).
+
+        Args:
+            bbox: [min_lon, min_lat, max_lon, max_lat]
+            date: Date in YYYY-MM-DD format
+            width: Image width in pixels (default: 512)
+            height: Image height in pixels (default: 512)
+
+        Returns:
+            Raw TIFF image data (6-band: B02, B03, B04, B8A, B11, B12)
+        """
+        token = self._get_token()
+
+        # Time range: specific date ±1 day for better chance of finding data
+        time_from = f"{date}T00:00:00Z"
+        time_to = f"{date}T23:59:59Z"
+
+        # Evalscript for Prithvi bands (Blue, Green, Red, NIR, SWIR1, SWIR2)
+        evalscript = """
+        //VERSION=3
+        function setup() {
+          return {
+            input: [{
+              bands: ["B02", "B03", "B04", "B8A", "B11", "B12"],
+              units: "DN"
+            }],
+            output: {
+              bands: 6,
+              sampleType: "FLOAT32"
+            }
+          };
+        }
+
+        function evaluatePixel(sample) {
+          return [sample.B02, sample.B03, sample.B04, sample.B8A, sample.B11, sample.B12];
+        }
+        """
+
+        request_payload = {
+            "input": {
+                "bounds": {
+                    "bbox": bbox,
+                    "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/4326"}
+                },
+                "data": [{
+                    "type": "sentinel-2-l1c",
+                    "dataFilter": {
+                        "timeRange": {
+                            "from": time_from,
+                            "to": time_to
+                        }
+                    }
+                }]
+            },
+            "output": {
+                "width": width,
+                "height": height,
+                "responses": [{
+                    "identifier": "default",
+                    "format": {"type": "image/tiff"}
+                }]
+            },
+            "evalscript": evalscript
+        }
+
+        response = requests.post(
+            "https://services.sentinel-hub.com/api/v1/process",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            json=request_payload,
+            timeout=60
+        )
+
+        if not response.ok:
+            error_detail = response.text
+            raise Exception(
+                f"Sentinel Hub fetch error ({response.status_code}): {error_detail}"
+            )
+
+        return response.content
