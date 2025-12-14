@@ -119,7 +119,9 @@ async def segment_flood_area(
     bbox: list[float],
     date: str,
     image_id: str = "",
-    output_prefix: str = ""
+    output_prefix: str = "",
+    width: int = 512,
+    height: int = 512
 ) -> dict:
     """
     Fetch Sentinel-2 imagery and run Prithvi water segmentation.
@@ -141,6 +143,10 @@ async def segment_flood_area(
               Example: "2024-09-19"
         image_id: Optional image ID from search results (for reference)
         output_prefix: Optional prefix for output files (default: uses date)
+        width: Image width in pixels (default: 512, max: 2500)
+               Higher = more detail but slower
+        height: Image height in pixels (default: 512, max: 2500)
+                Higher = more detail but slower
 
     Returns:
         Dictionary containing:
@@ -192,8 +198,13 @@ async def segment_flood_area(
 
     try:
         # Step 1: Fetch Sentinel-2 imagery
-        print(f"Fetching Sentinel-2 imagery for {date}...", file=sys.stderr)
-        image_data = sentinel_client.fetch_image(bbox=bbox, date=date)
+        print(f"Fetching Sentinel-2 imagery for {date} ({width}x{height})...", file=sys.stderr)
+        image_data = sentinel_client.fetch_image(
+            bbox=bbox,
+            date=date,
+            width=width,
+            height=height
+        )
 
         # Save TIFF to run directory
         tiff_filename = "sentinel_image.tif"
@@ -264,6 +275,264 @@ async def segment_flood_area(
             },
             "metadata": metadata,
             "stats": stats
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "bbox": bbox,
+            "date": date
+        }
+
+@mcp.tool
+async def get_time_series_water(
+    bbox: list[float],
+    start_date: str,
+    end_date: str,
+    max_images: int = 10,
+    max_cloud_cover: float = 30.0,
+    segment_water: bool = True
+) -> dict:
+    """
+    Get time series of water coverage for change detection and flood analysis.
+
+    This tool finds the best available images over a time period and
+    optionally segments water coverage for each date. Essential for
+    detecting flood changes (before/after comparison).
+
+    Args:
+        bbox: Bounding box as [min_lon, min_lat, max_lon, max_lat]
+        start_date: Start date (YYYY-MM-DD), e.g., "2024-09-01"
+        end_date: End date (YYYY-MM-DD), e.g., "2024-09-30"
+        max_images: Maximum number of images to return (default: 10)
+        max_cloud_cover: Maximum cloud coverage % (default: 30.0)
+        segment_water: If True, runs segmentation on each image (slower but complete)
+                      If False, just returns available dates (faster)
+
+    Returns:
+        Dictionary containing:
+        - dates: List of selected dates
+        - total_found: Total images found
+        - images_processed: Number of images processed
+        - segmented: Whether water segmentation was performed
+        - time_series: List of results for each date (if segmented)
+
+    Example:
+        # Get time series for Hurricane Helene impact
+        result = get_time_series_water(
+            bbox=[-83.05, 29.12, -82.95, 29.18],
+            start_date="2024-09-01",  # Before hurricane
+            end_date="2024-09-30",    # After hurricane
+            max_images=5,
+            segment_water=True
+        )
+        # Returns water coverage for 5 dates, showing how flooding changed
+    """
+    import sys
+
+    # Validate inputs
+    if len(bbox) != 4:
+        raise ValueError("bbox must have exactly 4 values")
+
+    # Step 1: Search for available images
+    print(f"Searching for time series: {start_date} to {end_date}...", file=sys.stderr)
+
+    search_results = sentinel_client.search_images(
+        start_date=start_date,
+        end_date=end_date,
+        bbox=bbox,
+        limit=max_images * 3,  # Fetch more to filter
+        max_cloud_cover=max_cloud_cover,
+        sample_strategy="evenly_spaced"  # Distribute across time range
+    )
+
+    selected_dates = search_results["dates"][:max_images]
+
+    if not segment_water:
+        # Fast mode: just return dates
+        return {
+            "status": "success",
+            "dates": selected_dates,
+            "total_found": search_results["total_found"],
+            "images_processed": 0,
+            "segmented": False,
+            "message": f"Found {len(selected_dates)} dates. Use segment_water=True to process."
+        }
+
+    # Step 2: Create parent directory for this time series request
+    from datetime import datetime as dt
+    series_id = f"timeseries_{start_date.replace('-', '')}_to_{end_date.replace('-', '')}_{dt.now().strftime('%H%M%S')}"
+    series_dir = OUTPUTS_DIR / series_id
+    series_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Time series output directory: {series_dir.absolute()}", file=sys.stderr)
+    print(f"Segmenting water for {len(selected_dates)} dates...", file=sys.stderr)
+
+    time_series = []
+    for i, date in enumerate(selected_dates):
+        print(f"Processing {i+1}/{len(selected_dates)}: {date}...", file=sys.stderr)
+
+        # Create subfolder for this date within the series directory
+        date_dir = series_dir / date.replace('-', '')
+        date_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # Fetch and save imagery
+            image_data = sentinel_client.fetch_image(bbox=bbox, date=date)
+            tiff_path = date_dir / "sentinel_image.tif"
+            with open(tiff_path, "wb") as f:
+                f.write(image_data)
+
+            # Run segmentation
+            original_path, mask_path, overlay_path = prithvi_client.segment_flood(str(tiff_path))
+
+            # Save outputs
+            import shutil
+            shutil.copy(mask_path, date_dir / "water_mask.webp")
+            shutil.copy(overlay_path, date_dir / "overlay.webp")
+            shutil.copy(original_path, date_dir / "original_viz.webp")
+
+            # Calculate stats
+            stats = prithvi_client.calculate_water_coverage(str(date_dir / "water_mask.webp"))
+
+            # Get metadata
+            with rasterio.open(tiff_path) as src:
+                metadata = {
+                    "bounds": [src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top],
+                    "transform": list(src.transform),
+                    "crs": "EPSG:4326"
+                }
+
+            time_series.append({
+                "date": date,
+                "water_coverage_pct": stats["water_coverage_pct"],
+                "output_directory": str(date_dir.absolute()),
+                "files": {
+                    "water_mask": str((date_dir / "water_mask.webp").absolute()),
+                    "overlay": str((date_dir / "overlay.webp").absolute())
+                },
+                "metadata": metadata,
+                "stats": stats
+            })
+
+        except Exception as e:
+            print(f"Failed to process {date}: {e}", file=sys.stderr)
+            time_series.append({
+                "date": date,
+                "error": str(e)
+            })
+
+    return {
+        "status": "success",
+        "series_id": series_id,
+        "output_directory": str(series_dir.absolute()),
+        "dates": selected_dates,
+        "total_found": search_results["total_found"],
+        "images_processed": len(time_series),
+        "segmented": True,
+        "time_series": time_series,
+        "summary": {
+            "start_date": start_date,
+            "end_date": end_date,
+            "bbox": bbox
+        }
+    }
+
+@mcp.tool
+async def fetch_sar_image(
+    bbox: list[float],
+    date: str,
+    output_prefix: str = ""
+) -> dict:
+    """
+    Fetch Sentinel-1 SAR (radar) imagery that works through clouds.
+
+    SAR (Synthetic Aperture Radar) uses radar instead of optical light,
+    allowing it to see through clouds, smoke, and darkness. Essential for
+    monitoring floods during active storms when optical imagery is obscured.
+
+    Args:
+        bbox: Bounding box as [min_lon, min_lat, max_lon, max_lat]
+        date: Date to fetch (YYYY-MM-DD format)
+        output_prefix: Optional prefix for output files
+
+    Returns:
+        Dictionary containing:
+        - status: "success" or "error"
+        - files: Paths to SAR imagery
+        - metadata: Georeference information
+        - date: Input date
+        - sensor: "sentinel-1-sar"
+
+    Example:
+        # Get SAR image during Hurricane Helene (works through clouds!)
+        result = fetch_sar_image(
+            bbox=[-83.05, 29.12, -82.95, 29.18],
+            date="2024-09-27"  # During hurricane
+        )
+        # Returns SAR imagery that can detect flooding despite cloud cover
+    """
+    import sys
+    from datetime import datetime as dt
+
+    # Validate inputs
+    if len(bbox) != 4:
+        raise ValueError("bbox must have exactly 4 values")
+
+    # Generate output prefix and create run-specific directory
+    if not output_prefix:
+        output_prefix = f"sar_{date.replace('-', '')}"
+
+    run_id = f"{output_prefix}_{dt.now().strftime('%H%M%S')}"
+    run_dir = OUTPUTS_DIR / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Output directory: {run_dir.absolute()}", file=sys.stderr)
+
+    try:
+        # Fetch Sentinel-1 SAR imagery
+        print(f"Fetching Sentinel-1 SAR for {date}...", file=sys.stderr)
+        sar_data = sentinel_client.fetch_sar_image(bbox=bbox, date=date)
+
+        # Save SAR TIFF
+        tiff_filename = "sar_image.tif"
+        tiff_path = run_dir / tiff_filename
+        with open(tiff_path, "wb") as f:
+            f.write(sar_data)
+
+        print(f"Saved SAR image: {tiff_path.absolute()}", file=sys.stderr)
+
+        # Extract metadata
+        with rasterio.open(tiff_path) as src:
+            transform_matrix = list(src.transform)
+            bounds = src.bounds
+            metadata = {
+                "bounds": [bounds.left, bounds.bottom, bounds.right, bounds.top],
+                "transform": transform_matrix,
+                "crs": "EPSG:4326",
+                "width": src.width,
+                "height": src.height,
+                "bands": src.count,
+                "band_descriptions": ["VV", "VH"]
+            }
+
+        return {
+            "status": "success",
+            "sensor": "sentinel-1-sar",
+            "date": date,
+            "bbox": bbox,
+            "run_id": run_id,
+            "output_directory": str(run_dir.absolute()),
+            "files": {
+                "sar_image": tiff_filename,
+                "absolute_paths": {
+                    "directory": str(run_dir.absolute()),
+                    "sar_image": str(tiff_path.absolute())
+                }
+            },
+            "metadata": metadata,
+            "note": "SAR imagery works through clouds. VV and VH polarizations included."
         }
 
     except Exception as e:

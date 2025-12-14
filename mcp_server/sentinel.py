@@ -308,3 +308,97 @@ class SentinelHubClient:
             )
 
         return response.content
+
+    def fetch_sar_image(
+        self,
+        bbox: list[float],
+        date: str,
+        width: int = 512,
+        height: int = 512
+    ) -> bytes:
+        """
+        Fetch Sentinel-1 SAR imagery (works through clouds!).
+
+        SAR (Synthetic Aperture Radar) can detect water through clouds,
+        making it ideal for flood monitoring during storms.
+
+        Args:
+            bbox: [min_lon, min_lat, max_lon, max_lat]
+            date: Date in YYYY-MM-DD format
+            width: Image width in pixels (default: 512)
+            height: Image height in pixels (default: 512)
+
+        Returns:
+            Raw TIFF image data (2-band: VV and VH polarizations)
+        """
+        token = self._get_token()
+
+        # Time range: specific date ±3 days for SAR (less frequent than optical)
+        time_from = f"{date}T00:00:00Z"
+        time_to = f"{date}T23:59:59Z"
+
+        # Evalscript for Sentinel-1 (VV and VH polarizations)
+        evalscript = """
+        //VERSION=3
+        function setup() {
+          return {
+            input: [{
+              bands: ["VV", "VH"],
+              units: "DN"
+            }],
+            output: {
+              bands: 2,
+              sampleType: "FLOAT32"
+            }
+          };
+        }
+
+        function evaluatePixel(sample) {
+          return [sample.VV, sample.VH];
+        }
+        """
+
+        request_payload = {
+            "input": {
+                "bounds": {
+                    "bbox": bbox,
+                    "properties": {"crs": "http://www.opengis.net/def/crs/EPSG/0/4326"}
+                },
+                "data": [{
+                    "type": "sentinel-1-grd",
+                    "dataFilter": {
+                        "timeRange": {
+                            "from": time_from,
+                            "to": time_to
+                        }
+                    }
+                }]
+            },
+            "output": {
+                "width": width,
+                "height": height,
+                "responses": [{
+                    "identifier": "default",
+                    "format": {"type": "image/tiff"}
+                }]
+            },
+            "evalscript": evalscript
+        }
+
+        response = requests.post(
+            "https://services.sentinel-hub.com/api/v1/process",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            },
+            json=request_payload,
+            timeout=60
+        )
+
+        if not response.ok:
+            error_detail = response.text
+            raise Exception(
+                f"Sentinel Hub SAR fetch error ({response.status_code}): {error_detail}"
+            )
+
+        return response.content
