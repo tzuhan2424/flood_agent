@@ -120,6 +120,8 @@ async def segment_flood_area(
     date: str,
     image_id: str = "",
     output_prefix: str = "",
+    parent_dir: str = "",
+    subfolder_name: str = "",
     width: int = 512,
     height: int = 512
 ) -> dict:
@@ -143,6 +145,10 @@ async def segment_flood_area(
               Example: "2024-09-19"
         image_id: Optional image ID from search results (for reference)
         output_prefix: Optional prefix for output files (default: uses date)
+        parent_dir: Optional parent directory name (default: auto-generated)
+                   Use this to group related images (e.g., before/after) in one folder
+        subfolder_name: Optional subfolder within parent_dir (e.g., "before", "after")
+                       Creates: outputs/{parent_dir}/{subfolder_name}/
         width: Image width in pixels (default: 512, max: 2500)
                Higher = more detail but slower
         height: Image height in pixels (default: 512, max: 2500)
@@ -183,17 +189,29 @@ async def segment_flood_area(
     if len(bbox) != 4:
         raise ValueError("bbox must have exactly 4 values [min_lon, min_lat, max_lon, max_lat]")
 
-    # Generate output prefix and create run-specific directory
-    if not output_prefix:
-        output_prefix = date.replace("-", "")
-
-    # Create subdirectory for this run: outputs/YYYYMMDD_run/
+    # Generate output directory structure
     from datetime import datetime as dt
-    run_id = f"{output_prefix}_{dt.now().strftime('%H%M%S')}"
-    run_dir = OUTPUTS_DIR / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-
     import sys
+
+    if parent_dir:
+        # Use provided parent directory
+        base_dir = OUTPUTS_DIR / parent_dir
+    else:
+        # Auto-generate parent directory with timestamp
+        if not output_prefix:
+            output_prefix = date.replace("-", "")
+        parent_dir = f"{output_prefix}_{dt.now().strftime('%H%M%S')}"
+        base_dir = OUTPUTS_DIR / parent_dir
+
+    # Add subfolder if specified (e.g., "before", "after")
+    if subfolder_name:
+        run_dir = base_dir / subfolder_name
+        run_id = f"{parent_dir}/{subfolder_name}"
+    else:
+        run_dir = base_dir
+        run_id = parent_dir
+
+    run_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {run_dir.absolute()}", file=sys.stderr)
 
     try:
