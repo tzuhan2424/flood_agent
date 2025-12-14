@@ -40,7 +40,7 @@ async def search_sentinel_images(
     start_date: str,
     end_date: str,
     bbox: list[float],
-    max_cloud_cover: float = 30.0,
+    max_cloud_cover: float = 10.0,
     limit: int = 10,
     sample_strategy: str = "lowest_cloud"
 ) -> dict:
@@ -57,7 +57,7 @@ async def search_sentinel_images(
         bbox: Bounding box as [min_lon, min_lat, max_lon, max_lat]
               Example: [-83.05, 29.12, -82.95, 29.18] for Cedar Key, FL
         max_cloud_cover: Maximum acceptable cloud coverage (0-100%)
-                        Default: 30%
+                        Default: 10% (recommended for flood detection)
         limit: Maximum number of results to return (default: 10)
         sample_strategy: How to sample if more results found than limit
             - "lowest_cloud": Pick images with lowest cloud cover (default)
@@ -122,21 +122,28 @@ async def segment_flood_area(
     output_prefix: str = "",
     parent_dir: str = "",
     subfolder_name: str = "",
-    width: int = 512,
-    height: int = 512
+    width: int = 1024,
+    height: int = 1024
 ) -> dict:
     """
     Fetch Sentinel-2 imagery and run Prithvi water segmentation.
 
     This tool performs the complete water detection pipeline:
-    1. Fetches Sentinel-2 satellite imagery from Sentinel Hub
-    2. Runs IBM/NASA Prithvi AI water segmentation
-    3. Saves results (water mask, overlay, original viz) to outputs/
-    4. Returns file paths, metadata, and statistics
+    1. Validates cloud coverage and selects best date (within ±5 days if needed)
+    2. Fetches Sentinel-2 satellite imagery from Sentinel Hub
+    3. Runs IBM/NASA Prithvi AI water segmentation
+    4. Saves results (water mask, overlay, original viz) to outputs/
+    5. Returns file paths, metadata, and statistics
 
     IMPORTANT: This detects WATER, not necessarily FLOODING.
     The mask includes lakes, rivers, ocean, and other water bodies.
     For true flood detection, you need change detection (before/after comparison).
+
+    CLOUD COVERAGE: The tool automatically checks cloud coverage for the requested
+    date. If cloud coverage exceeds 10%, it will select the nearest date within
+    ±5 days that has acceptable cloud coverage (<10%). The response includes both
+    the requested date and actual date used, along with a flag indicating if
+    substitution occurred.
 
     Args:
         bbox: Bounding box as [min_lon, min_lat, max_lon, max_lat]
@@ -149,19 +156,22 @@ async def segment_flood_area(
                    Use this to group related images (e.g., before/after) in one folder
         subfolder_name: Optional subfolder within parent_dir (e.g., "before", "after")
                        Creates: outputs/{parent_dir}/{subfolder_name}/
-        width: Image width in pixels (default: 512, max: 2500)
-               Higher = more detail but slower
-        height: Image height in pixels (default: 512, max: 2500)
-                Higher = more detail but slower
+        width: Image width in pixels (default: 1024, max: 2500)
+               Higher = more detail but slower. 1024x1024 recommended for most use cases.
+        height: Image height in pixels (default: 1024, max: 2500)
+                Higher = more detail but slower. 1024x1024 recommended for most use cases.
 
     Returns:
         Dictionary containing:
         - status: "success" or "error"
+        - date: Actual date used for imagery (may differ from requested)
+        - requested_date: Original requested date
+        - date_substitution: Boolean flag if different date was selected
+        - cloud_coverage: Cloud coverage percentage of selected image
         - files: Paths to output files (relative and absolute)
         - metadata: Georeference information (bounds, transform, CRS)
         - stats: Water coverage statistics (not flood-specific!)
         - bbox: Input bounding box
-        - date: Input date
 
     Example:
         # First, search for available imagery
@@ -215,11 +225,64 @@ async def segment_flood_area(
     print(f"Output directory: {run_dir.absolute()}", file=sys.stderr)
 
     try:
-        # Step 1: Fetch Sentinel-2 imagery
-        print(f"Fetching Sentinel-2 imagery for {date} ({width}x{height})...", file=sys.stderr)
+        # Step 0: Validate cloud coverage and find best date if needed
+        from datetime import datetime, timedelta
+
+        # Parse the requested date
+        requested_date = datetime.strptime(date, "%Y-%m-%d")
+
+        # Search for images in a ±5 day window around requested date
+        search_start = (requested_date - timedelta(days=5)).strftime("%Y-%m-%d")
+        search_end = (requested_date + timedelta(days=5)).strftime("%Y-%m-%d")
+
+        print(f"Checking cloud coverage for {date} (searching {search_start} to {search_end})...", file=sys.stderr)
+
+        search_results = sentinel_client.search_images(
+            start_date=search_start,
+            end_date=search_end,
+            bbox=bbox,
+            max_cloud_cover=100.0,  # Get all images first
+            limit=50,
+            sample_strategy="all"
+        )
+
+        # Find best date with cloud coverage < 10%
+        best_date = None
+        best_cloud = None
+        min_date_diff = float('inf')
+
+        for img in search_results.get("images", []):
+            img_date = datetime.strptime(img["date"], "%Y-%m-%d")
+            img_cloud = img["cloud_coverage"]
+            date_diff = abs((img_date - requested_date).days)
+
+            # Prefer images with cloud < 10%
+            if img_cloud < 10.0:
+                if date_diff < min_date_diff:
+                    best_date = img["date"]
+                    best_cloud = img_cloud
+                    min_date_diff = date_diff
+
+        # If no images with < 10% cloud, use the requested date anyway but warn
+        if best_date is None:
+            print(f"WARNING: No images with <10% cloud found. Using requested date {date}.", file=sys.stderr)
+            actual_date = date
+            actual_cloud = "unknown"
+        elif best_date != date:
+            print(f"INFO: Requested date {date} has high cloud coverage.", file=sys.stderr)
+            print(f"INFO: Using nearby date {best_date} with {best_cloud:.1f}% cloud instead.", file=sys.stderr)
+            actual_date = best_date
+            actual_cloud = best_cloud
+        else:
+            print(f"INFO: Date {date} has acceptable cloud coverage ({best_cloud:.1f}%).", file=sys.stderr)
+            actual_date = date
+            actual_cloud = best_cloud
+
+        # Step 1: Fetch Sentinel-2 imagery using the selected date
+        print(f"Fetching Sentinel-2 imagery for {actual_date} ({width}x{height})...", file=sys.stderr)
         image_data = sentinel_client.fetch_image(
             bbox=bbox,
-            date=date,
+            date=actual_date,
             width=width,
             height=height
         )
@@ -274,7 +337,10 @@ async def segment_flood_area(
         return {
             "status": "success",
             "image_id": image_id,
-            "date": date,
+            "date": actual_date,  # Use actual date fetched (may differ from requested)
+            "requested_date": date,  # Original requested date
+            "date_substitution": actual_date != date,  # Flag if different date was used
+            "cloud_coverage": actual_cloud if isinstance(actual_cloud, (int, float)) else None,
             "bbox": bbox,
             "run_id": run_id,
             "output_directory": str(run_dir.absolute()),
@@ -309,7 +375,7 @@ async def get_time_series_water(
     start_date: str,
     end_date: str,
     max_images: int = 10,
-    max_cloud_cover: float = 30.0,
+    max_cloud_cover: float = 10.0,
     segment_water: bool = True
 ) -> dict:
     """
@@ -324,7 +390,7 @@ async def get_time_series_water(
         start_date: Start date (YYYY-MM-DD), e.g., "2024-09-01"
         end_date: End date (YYYY-MM-DD), e.g., "2024-09-30"
         max_images: Maximum number of images to return (default: 10)
-        max_cloud_cover: Maximum cloud coverage % (default: 30.0)
+        max_cloud_cover: Maximum cloud coverage % (default: 10.0, recommended for flood detection)
         segment_water: If True, runs segmentation on each image (slower but complete)
                       If False, just returns available dates (faster)
 

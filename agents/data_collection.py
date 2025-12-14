@@ -34,7 +34,7 @@ def create_data_collection_agent() -> LlmAgent:
                 args=["-m", "mcp_server.server"],
                 cwd=str(PROJECT_ROOT),
             ),
-            timeout=300.0,  # 5 minutes timeout for Prithvi segmentation
+            timeout=600.0,  # 10 minutes timeout for Prithvi segmentation and time series
         ),
         tool_filter=[
             "search_sentinel_images",

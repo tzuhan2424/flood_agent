@@ -8,7 +8,7 @@ import requests
 
 def geocode_location(
     place_name: str,
-    bbox_size_km: float = 10.0
+    bbox_size_km: float = 5.0
 ) -> dict:
     """
     Convert a place name to coordinates and bounding box.
@@ -18,9 +18,9 @@ def geocode_location(
 
     Args:
         place_name: Name of the place (e.g., "Brooklyn, NY", "Cedar Key, FL")
-        bbox_size_km: Size of bounding box in kilometers (default: 10km)
-                     For cities, 10-20km works well
-                     For neighborhoods, 5-10km
+        bbox_size_km: Size of bounding box in kilometers (default: 5km for focused analysis)
+                     For cities, 10-15km
+                     For neighborhoods/towns, 5-8km (recommended)
                      For specific areas, 2-5km
 
     Returns:

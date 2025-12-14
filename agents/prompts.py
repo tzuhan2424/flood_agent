@@ -88,6 +88,13 @@ You have access to MCP tools for satellite data:
    - Creates ONE parent folder with date subfolders automatically
    - Example: outputs/timeseries_20240901_to_20240930/20240905/, /20240915/, etc.
 
+**4. For statistical flood detection (5+ images recommended):**
+   - Use `get_time_series_water` to collect multiple dates
+   - Returns: List of {"date": "2024-09-15", "water_pct": 15.2, ...}
+   - Pass this data to FloodDetectionAgent for statistical analysis
+   - Agent will identify which dates are outliers using z-scores
+   - Minimum 3 images required, 5+ recommended for reliable statistics
+
 ## Your Workflow:
 
 1. **Parse the request** to identify:
@@ -185,45 +192,64 @@ No segmentation performed. Use these dates for further analysis if needed."
   - Each date has its own subfolder (20240905/, 20240915/, etc.)"
 """
 
-FLOOD_DETECTION_PROMPT = """You are a flood detection expert specializing in change detection analysis.
+FLOOD_DETECTION_PROMPT = """You are a flood detection expert specializing in statistical anomaly detection.
 
-You will receive water coverage data from the Data Collection Agent. Your job is to analyze this data and determine if flooding has occurred.
+You have access to tools:
+- **calculate_flood_statistics**: Analyzes time series water coverage to detect outliers
 
 ## Your Analysis Process:
 
-1. **Compare water coverage** before and after:
-   - Calculate: change = after_pct - before_pct
-   - Positive change indicates increased water (potential flooding)
+**When given time series data** (3+ data points):
+1. Call `calculate_flood_statistics(time_series=data)`
+2. Interpret the results:
+   - z > 3.0: EXTREME outlier (major flood event)
+   - z > 2.0: SIGNIFICANT outlier (notable flood)
+   - z ≤ 2.0: Normal variation
+3. Return structured findings with severity classification
 
-2. **Classify severity**:
-   - CRITICAL: >50% increase in water coverage
+**When given before/after data** (2 data points):
+1. Calculate simple change: after_pct - before_pct
+2. Classify severity:
+   - CRITICAL: >50% increase
    - SEVERE: 25-50% increase
    - MODERATE: 10-25% increase
    - MINOR: 5-10% increase
-   - NONE: <5% increase (normal variation)
+   - NONE: <5% increase
 
-3. **Identify affected areas**:
-   - Based on severity, describe likely affected zones
-   - Consider coastal vs inland areas
-   - Note infrastructure at risk
+## Response Format:
 
-4. **Return structured analysis**:
-   - flood_detected: true/false
-   - severity: critical/severe/moderate/minor/none
-   - before_water_pct, after_water_pct
-   - flood_increase_pct
-   - affected_zones description
-   - summary of findings
+**For Time Series Analysis:**
+```
+Statistical Flood Analysis:
+- Period: [start_date] to [end_date]
+- Baseline: μ = X.X%, σ = Y.Y% (n=Z images)
+- Flood Events Detected: [count]
 
-## Example Response:
-"Flood Analysis Results:
-- Flood Detected: YES
-- Severity: CRITICAL
-- Water coverage: 15.2% → 85.3% (+70.1%)
-- Affected zones: Downtown area severely impacted, waterfront completely inundated,
-  residential areas near coast experiencing significant flooding
-- Summary: Critical flooding detected with 70% increase in water coverage,
-  indicating major flood event requiring immediate response."
+OUTLIERS:
+1. [Date]: Z.Z% water coverage (z-score: W.W, severity: EXTREME/SIGNIFICANT)
+   - Deviation: +X.X% above period average
+2. [Next outlier...]
+
+INTERPRETATION:
+[Explain what the outliers mean, context about flooding]
+```
+
+**For Before/After Analysis:**
+```
+Flood Change Detection:
+- Before ([date]): X.X% water coverage
+- After ([date]): Y.Y% water coverage
+- Change: +Z.Z% (severity: CRITICAL/SEVERE/MODERATE/MINOR/NONE)
+
+INTERPRETATION:
+[Explain the change and implications]
+```
+
+## Important Notes:
+- Require at least 5 data points for reliable statistics (warn if <5)
+- Intra-period detection: compares within the query window, not against historical data
+- z-score interpretation: measures how unusual a date is compared to the period average
+- Always include context: "Sept 27 was 8.2σ above the Sep-Oct 2024 average"
 """
 
 IMPACT_ASSESSMENT_PROMPT = """You are an impact assessment expert specializing in flood damage analysis and emergency response.
