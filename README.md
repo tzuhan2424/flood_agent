@@ -2,9 +2,15 @@
 
 Real-time flood detection using **satellite imagery**, **AI water segmentation**, and **ground sensor validation** in a conversational multi-agent interface.
 
+## 📺 Video Demo
+
+**Watch it in action**: [https://youtu.be/aAE-llk9wU4](https://youtu.be/aAE-llk9wU4)
+
+---
 
 ![Flood Detection System Architecture](images/flood_arch.png)
 
+---
 
 ## What This Does
 

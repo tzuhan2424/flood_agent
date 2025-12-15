@@ -1,5 +1,11 @@
 # Flood Detection System - Demo Guide
 
+## 📺 Video Demo
+
+**Watch the full demo**: [https://youtu.be/aAE-llk9wU4](https://youtu.be/aAE-llk9wU4)
+
+---
+
 ## Quick Start
 
 ### Prerequisites
