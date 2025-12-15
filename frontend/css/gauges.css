@@ -1,0 +1,208 @@
+/* Gauge data display styles */
+.gauges-section {
+    flex: 1;  /* Takes 1/3 of space */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-top: 1px solid var(--border-color);
+}
+
+.gauges-container {
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+.gauge-card {
+    background-color: var(--bg-secondary);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    border-left: 4px solid var(--primary-color);
+}
+
+.gauge-card.normal {
+    border-left-color: var(--secondary-color);
+}
+
+.gauge-card.action {
+    border-left-color: var(--warning-color);
+}
+
+.gauge-card.minor {
+    border-left-color: #f97316;
+}
+
+.gauge-card.moderate {
+    border-left-color: #dc2626;
+}
+
+.gauge-card.major {
+    border-left-color: #7c2d12;
+}
+
+.gauge-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    margin-bottom: 0.75rem;
+}
+
+.gauge-name {
+    font-weight: 600;
+    font-size: 0.875rem;
+}
+
+.gauge-id {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.flood-badge {
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.flood-badge.normal {
+    background-color: #d1fae5;
+    color: #065f46;
+}
+
+.flood-badge.action {
+    background-color: #fef3c7;
+    color: #92400e;
+}
+
+.flood-badge.minor {
+    background-color: #fed7aa;
+    color: #7c2d12;
+}
+
+.flood-badge.moderate {
+    background-color: #fecaca;
+    color: #7f1d1d;
+}
+
+.flood-badge.major {
+    background-color: #991b1b;
+    color: white;
+}
+
+.gauge-reading {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--primary-color);
+    margin-bottom: 0.5rem;
+}
+
+.gauge-metadata {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+    font-size: 0.75rem;
+}
+
+.metadata-item {
+    display: flex;
+    flex-direction: column;
+}
+
+.metadata-label {
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.metadata-value {
+    color: var(--text-primary);
+}
+
+/* Flood Categories Visual */
+.flood-categories {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+.category-bar {
+    display: flex;
+    height: 8px;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+}
+
+.category-segment {
+    flex: 1;
+}
+
+.category-segment.normal {
+    background-color: var(--secondary-color);
+}
+
+.category-segment.action {
+    background-color: var(--warning-color);
+}
+
+.category-segment.minor {
+    background-color: #f97316;
+}
+
+.category-segment.moderate {
+    background-color: #dc2626;
+}
+
+.category-segment.major {
+    background-color: #7c2d12;
+}
+
+.category-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.625rem;
+    color: var(--text-secondary);
+}
+
+/* Gauge Chart Styles */
+.gauge-chart-container {
+    background: white;
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    box-shadow: var(--shadow-sm);
+}
+
+.chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 2px solid var(--border-color);
+}
+
+.chart-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.chart-subtitle {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+}
+
+.chart-info {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    background: var(--bg-secondary);
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.25rem;
+}
+
+#gauge-chart {
+    width: 100%;
+    height: auto;
+    display: block;
+}

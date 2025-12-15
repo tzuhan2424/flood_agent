@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flood Agent - Multi-Agent Flood Detection</title>
+
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="stylesheet" href="/css/chat.css">
+    <link rel="stylesheet" href="/css/images.css">
+    <link rel="stylesheet" href="/css/gauges.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <h1>Flood Agent</h1>
+            <p class="subtitle">Multi-Agent Flood Detection System</p>
+            <div class="connection-status" id="connection-status">
+                <span class="status-indicator disconnected"></span>
+                <span class="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Panel: Chat Interface -->
+            <div class="chat-panel">
+                <div class="chat-header">
+                    <h2>Chat with Flood Agent</h2>
+                </div>
+
+                <!-- Messages Container -->
+                <div class="messages-container" id="messages">
+                    <div class="welcome-message">
+                        <h3>Welcome to Flood Agent</h3>
+                        <p>Ask me about flood detection anywhere in the world.</p>
+                        <div class="example-queries">
+                            <p><strong>Try asking:</strong></p>
+                            <ul>
+                                <li>"What was the impact of Hurricane Helene on Cedar Key, Florida?"</li>
+                                <li>"Show me flooding in Cedar Key during September 2024"</li>
+                                <li>"What's the current water level in Cedar Key?"</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Agent Activity Panel -->
+                <div class="agent-activity" id="agent-activity">
+                    <div class="activity-header">Agent Activity</div>
+                    <div class="activity-content" id="activity-content">
+                        <p class="inactive">Waiting for query...</p>
+                    </div>
+                </div>
+
+                <!-- Input Area -->
+                <div class="chat-input-area">
+                    <textarea
+                        id="chat-input"
+                        placeholder="Ask about flood detection..."
+                        rows="2"
+                    ></textarea>
+                    <button id="send-button" class="send-button">Send</button>
+                </div>
+            </div>
+
+            <!-- Right Panel: Data Display -->
+            <div class="data-panel">
+                <!-- Image Gallery -->
+                <div class="images-section">
+                    <div class="section-header">
+                        <h3>Satellite Imagery</h3>
+                        <div style="display: flex; gap: 10px; align-items: center;">
+                            <button id="load-latest-button" class="load-latest-button">Load Latest</button>
+                            <span class="image-count" id="image-count">0 images</span>
+                        </div>
+                    </div>
+                    <div class="image-gallery" id="image-gallery">
+                        <p class="placeholder">Images will appear here</p>
+                    </div>
+                </div>
+
+                <!-- Gauge Data -->
+                <div class="gauges-section">
+                    <div class="section-header">
+                        <h3>Water Gauge Data</h3>
+                        <span class="gauge-count" id="gauge-count">0 gauges</span>
+                    </div>
+                    <div class="gauges-container" id="gauges-container">
+                        <p class="placeholder">Gauge data will appear here</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Modal for Full-Screen View -->
+    <div class="image-modal" id="image-modal">
+        <span class="close-modal">&times;</span>
+        <img class="modal-image" id="modal-image" src="" alt="">
+        <div class="image-info" id="image-info"></div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="/js/websocket.js"></script>
+    <script src="/js/chat.js"></script>
+    <script src="/js/images.js"></script>
+    <script src="/js/gauges.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>
