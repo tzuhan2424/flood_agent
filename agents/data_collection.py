@@ -37,10 +37,16 @@ def create_data_collection_agent() -> LlmAgent:
             timeout=600.0,  # 10 minutes timeout for Prithvi segmentation and time series
         ),
         tool_filter=[
+            # Satellite imagery tools
             "search_sentinel_images",
             "segment_flood_area",
             "get_time_series_water",
-            "fetch_sar_image",
+            # "fetch_sar_image",  # DISABLED - incompatible with Prithvi segmentation
+            # NWPS water gauge tools
+            "get_current_datetime",
+            "search_gauges",
+            "get_gauge_status",
+            "get_gauge_timeseries",
         ],
     )
 
@@ -48,9 +54,11 @@ def create_data_collection_agent() -> LlmAgent:
         name="DataCollectionAgent",
         model="gemini-2.0-flash",
         description=(
-            "Satellite imagery specialist. Call this agent to search for, fetch, "
-            "and segment satellite imagery for flood detection. Provide location "
-            "(bbox or place name) and date range. Returns water masks and coverage statistics."
+            "Water data specialist with expertise in both satellite imagery and real-time gauge monitoring. "
+            "For REAL-TIME queries: Uses NOAA NWPS gauges (instant results). "
+            "For HISTORICAL queries: Uses satellite imagery + gauges (comprehensive analysis). "
+            "Provide location (bbox or place name) and specify if real-time or historical. "
+            "Returns water levels, flood status, forecasts, water masks, and coverage statistics."
         ),
         instruction=DATA_COLLECTION_PROMPT,
         tools=[mcp_toolset],
