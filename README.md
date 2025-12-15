@@ -9,6 +9,7 @@ Real-time flood detection using **satellite imagery**, **AI water segmentation**
 ---
 
 ![Flood Detection System Architecture](images/flood_arch.png)
+![Flood Detection System](images/s.png)
 
 ---
 
