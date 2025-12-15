@@ -7,12 +7,14 @@ Exposes Sentinel Hub search as an MCP tool for AI agents.
 import os
 import shutil
 from pathlib import Path
+from datetime import datetime
 import rasterio
 from rasterio.transform import from_bounds
 
 from fastmcp import FastMCP
 from .sentinel import SentinelHubClient
 from .prithvi import PrithviClient
+from .nwps import NWPSClient
 
 # Initialize MCP server
 mcp = FastMCP("Flood Detection Tools")
@@ -20,6 +22,7 @@ mcp = FastMCP("Flood Detection Tools")
 # Initialize clients
 sentinel_client = SentinelHubClient()
 prithvi_client = PrithviClient()
+nwps_client = NWPSClient()
 
 # Ensure outputs directory exists (use absolute path)
 # Get the directory where this script is located, then go up one level to project root
@@ -123,7 +126,8 @@ async def segment_flood_area(
     parent_dir: str = "",
     subfolder_name: str = "",
     width: int = 1024,
-    height: int = 1024
+    height: int = 1024,
+    include_gauges: bool = True
 ) -> dict:
     """
     Fetch Sentinel-2 imagery and run Prithvi water segmentation.
@@ -132,12 +136,17 @@ async def segment_flood_area(
     1. Validates cloud coverage and selects best date (within ±5 days if needed)
     2. Fetches Sentinel-2 satellite imagery from Sentinel Hub
     3. Runs IBM/NASA Prithvi AI water segmentation
-    4. Saves results (water mask, overlay, original viz) to outputs/
-    5. Returns file paths, metadata, and statistics
+    4. Optionally fetches NWPS gauge data for the area (ground truth)
+    5. Saves results (water mask, overlay, original viz, gauge data) to outputs/
+    6. Returns file paths, metadata, and statistics
 
     IMPORTANT: This detects WATER, not necessarily FLOODING.
     The mask includes lakes, rivers, ocean, and other water bodies.
     For true flood detection, you need change detection (before/after comparison).
+
+    GAUGE DATA: By default, this tool also fetches current water level readings
+    from NWPS gauges in the area. This provides ground truth measurements to
+    complement the satellite imagery. Set include_gauges=False to skip this.
 
     CLOUD COVERAGE: The tool automatically checks cloud coverage for the requested
     date. If cloud coverage exceeds 10%, it will select the nearest date within
@@ -252,14 +261,16 @@ async def segment_flood_area(
         min_date_diff = float('inf')
 
         for img in search_results.get("images", []):
-            img_date = datetime.strptime(img["date"], "%Y-%m-%d")
-            img_cloud = img["cloud_coverage"]
+            # Extract just the date part (format: "2024-09-27T16:15:26Z" -> "2024-09-27")
+            img_date_str = img["date"].split("T")[0]
+            img_date = datetime.strptime(img_date_str, "%Y-%m-%d")
+            img_cloud = img["cloud_cover"]  # Fixed: was "cloud_coverage"
             date_diff = abs((img_date - requested_date).days)
 
             # Prefer images with cloud < 10%
             if img_cloud < 10.0:
                 if date_diff < min_date_diff:
-                    best_date = img["date"]
+                    best_date = img_date_str  # Use date string without time
                     best_cloud = img_cloud
                     min_date_diff = date_diff
 
@@ -333,8 +344,128 @@ async def segment_flood_area(
                 "height": src.height
             }
 
+        # Step 6: Fetch gauge data if requested
+        gauge_info = None
+        if include_gauges:
+            print(f"Fetching gauge data for bbox...", file=sys.stderr)
+            try:
+                # Search for gauges in the bbox
+                gauges_in_bbox = nwps_client.search_gauges_by_bbox(bbox, limit=10)
+
+                if gauges_in_bbox:
+                    print(f"  Found {len(gauges_in_bbox)} gauges, getting historical data for {actual_date}...", file=sys.stderr)
+
+                    # Get historical data for the specific date being analyzed
+                    gauge_data = []
+                    for gauge in gauges_in_bbox:
+                        try:
+                            # Fetch historical data for the analysis date (not current status!)
+                            hist_data = nwps_client.get_historical_data(
+                                gauge['lid'],
+                                actual_date,  # Same day
+                                actual_date   # Same day
+                            )
+
+                            if hist_data.get('source') in ['usgs', 'noaa']:
+                                # Extract the reading closest to noon on the requested date
+                                values = hist_data.get('values', [])
+                                if values:
+                                    # Get metadata for flood categories
+                                    metadata = nwps_client.get_gauge_metadata(gauge['lid'])
+                                    flood_cats = metadata.get('flood', {}).get('categories', {})
+
+                                    # Find PEAK (maximum) value for the day
+                                    peak_val = None
+                                    max_stage = -999
+
+                                    for val in values:
+                                        try:
+                                            stage = float(val.get('v', val.get('value', -999)))
+                                            if stage > max_stage:
+                                                max_stage = stage
+                                                peak_val = val
+                                        except:
+                                            continue
+
+                                    if peak_val:
+                                        stage_ft = float(peak_val.get('v', peak_val.get('value', -999)))
+
+                                        # Determine flood category
+                                        flood_status = nwps_client._classify_flood_level(stage_ft, {
+                                            'action': flood_cats.get('action', {}).get('stage'),
+                                            'minor': flood_cats.get('minor', {}).get('stage'),
+                                            'moderate': flood_cats.get('moderate', {}).get('stage'),
+                                            'major': flood_cats.get('major', {}).get('stage')
+                                        })
+
+                                        gauge_info = {
+                                            'lid': gauge['lid'],
+                                            'name': metadata.get('name'),
+                                            'location': {
+                                                'latitude': metadata.get('latitude'),
+                                                'longitude': metadata.get('longitude')
+                                            },
+                                            'observation_date': actual_date,
+                                            'peak_observation': {
+                                                'stage_ft': stage_ft,
+                                                'valid_time': peak_val.get('t', peak_val.get('dateTime')),
+                                                'source': hist_data['source']
+                                            },
+                                            'flood_categories': {
+                                                'action': flood_cats.get('action', {}).get('stage'),
+                                                'minor': flood_cats.get('minor', {}).get('stage'),
+                                                'moderate': flood_cats.get('moderate', {}).get('stage'),
+                                                'major': flood_cats.get('major', {}).get('stage')
+                                            },
+                                            'flood_status': flood_status
+                                        }
+                                        gauge_data.append(gauge_info)
+                                        print(f"    ✓ {gauge['lid']}: {stage_ft:.2f} ft ({flood_status['current_category']})", file=sys.stderr)
+                                else:
+                                    print(f"    ✗ {gauge['lid']}: No data available for {actual_date}", file=sys.stderr)
+                            else:
+                                print(f"    ✗ {gauge['lid']}: {hist_data.get('message', 'Data unavailable')}", file=sys.stderr)
+
+                        except Exception as e:
+                            print(f"    ✗ {gauge['lid']}: {str(e)}", file=sys.stderr)
+
+                    # Save gauge data to JSON
+                    if gauge_data:
+                        import json
+                        gauge_file = run_dir / "gauge_data.json"
+                        with open(gauge_file, 'w') as f:
+                            json.dump({
+                                "bbox": bbox,
+                                "analysis_date": actual_date,  # Date being analyzed
+                                "query_time": datetime.now().isoformat(),  # When this query was made
+                                "total_gauges": len(gauge_data),
+                                "gauges": gauge_data
+                            }, f, indent=2)
+
+                        print(f"  Saved gauge data: {gauge_file.absolute()}", file=sys.stderr)
+
+                        gauge_info = {
+                            "total_found": len(gauge_data),
+                            "file": "gauge_data.json",
+                            "absolute_path": str(gauge_file.absolute()),
+                            "data": gauge_data  # Include actual gauge data in response
+                        }
+                else:
+                    print(f"  No gauges found in bbox", file=sys.stderr)
+                    gauge_info = {
+                        "total_found": 0,
+                        "message": "No gauges found in the specified area"
+                    }
+
+            except Exception as e:
+                print(f"  ⚠ Failed to fetch gauge data: {str(e)}", file=sys.stderr)
+                gauge_info = {
+                    "error": str(e),
+                    "message": "Gauge data unavailable, but satellite processing succeeded"
+                }
+
         # Prepare response with organized paths
-        return {
+        response = {
             "status": "success",
             "image_id": image_id,
             "date": actual_date,  # Use actual date fetched (may differ from requested)
@@ -361,6 +492,12 @@ async def segment_flood_area(
             "stats": stats
         }
 
+        # Add gauge data if available
+        if gauge_info:
+            response["gauges"] = gauge_info
+
+        return response
+
     except Exception as e:
         return {
             "status": "error",
@@ -385,6 +522,9 @@ async def get_time_series_water(
     optionally segments water coverage for each date. Essential for
     detecting flood changes (before/after comparison).
 
+    IMPORTANT: Gauge data is automatically included for each date!
+    Each date folder will contain both satellite imagery and gauge_data.json.
+
     Args:
         bbox: Bounding box as [min_lon, min_lat, max_lon, max_lat]
         start_date: Start date (YYYY-MM-DD), e.g., "2024-09-01"
@@ -401,6 +541,8 @@ async def get_time_series_water(
         - images_processed: Number of images processed
         - segmented: Whether water segmentation was performed
         - time_series: List of results for each date (if segmented)
+            - Each date includes: water_coverage_pct, files, metadata, stats
+            - Each date includes: gauges (gauge data automatically included)
 
     Example:
         # Get time series for Hurricane Helene impact
@@ -488,7 +630,91 @@ async def get_time_series_water(
                     "crs": "EPSG:4326"
                 }
 
-            time_series.append({
+            # Fetch gauge data for this date
+            gauge_info = None
+            try:
+                print(f"    Fetching gauge data for {date}...", file=sys.stderr)
+                gauges_in_bbox = nwps_client.search_gauges_by_bbox(bbox, limit=10)
+
+                if gauges_in_bbox:
+                    gauge_data_list = []
+                    for gauge in gauges_in_bbox:
+                        try:
+                            # Get historical data for this specific date
+                            hist_data = nwps_client.get_historical_data(gauge['lid'], date, date)
+
+                            if hist_data.get('source') in ['usgs', 'noaa'] and hist_data.get('values'):
+                                # Get metadata
+                                metadata = nwps_client.get_gauge_metadata(gauge['lid'])
+                                flood_cats = metadata.get('flood', {}).get('categories', {})
+
+                                # Find PEAK (maximum) value for the day
+                                values = hist_data['values']
+                                peak_val = None
+                                max_stage = -999
+
+                                for val in values:
+                                    try:
+                                        stage = float(val.get('v', val.get('value', -999)))
+                                        if stage > max_stage:
+                                            max_stage = stage
+                                            peak_val = val
+                                    except:
+                                        continue
+
+                                if peak_val:
+                                    stage_ft = float(peak_val.get('v', peak_val.get('value', -999)))
+                                    flood_status = nwps_client._classify_flood_level(stage_ft, {
+                                        'action': flood_cats.get('action', {}).get('stage'),
+                                        'minor': flood_cats.get('minor', {}).get('stage'),
+                                        'moderate': flood_cats.get('moderate', {}).get('stage'),
+                                        'major': flood_cats.get('major', {}).get('stage')
+                                    })
+
+                                    gauge_info_item = {
+                                        'lid': gauge['lid'],
+                                        'name': metadata.get('name'),
+                                        'location': {'latitude': metadata.get('latitude'), 'longitude': metadata.get('longitude')},
+                                        'observation_date': date,
+                                        'peak_observation': {
+                                            'stage_ft': stage_ft,
+                                            'valid_time': peak_val.get('t', peak_val.get('dateTime')),
+                                            'source': hist_data['source']
+                                        },
+                                        'flood_categories': {
+                                            'action': flood_cats.get('action', {}).get('stage'),
+                                            'minor': flood_cats.get('minor', {}).get('stage'),
+                                            'moderate': flood_cats.get('moderate', {}).get('stage'),
+                                            'major': flood_cats.get('major', {}).get('stage')
+                                        },
+                                        'flood_status': flood_status
+                                    }
+                                    gauge_data_list.append(gauge_info_item)
+                        except Exception as e:
+                            print(f"      ✗ {gauge['lid']}: {str(e)}", file=sys.stderr)
+
+                    if gauge_data_list:
+                        import json
+                        gauge_file = date_dir / "gauge_data.json"
+                        with open(gauge_file, 'w') as f:
+                            json.dump({
+                                "bbox": bbox,
+                                "date": date,
+                                "query_time": datetime.now().isoformat(),
+                                "total_gauges": len(gauge_data_list),
+                                "gauges": gauge_data_list
+                            }, f, indent=2)
+
+                        gauge_info = {
+                            "total_found": len(gauge_data_list),
+                            "file": "gauge_data.json",
+                            "data": gauge_data_list  # Include actual gauge data in response
+                        }
+                        print(f"    ✓ Saved gauge data: {len(gauge_data_list)} gauge(s)", file=sys.stderr)
+            except Exception as e:
+                print(f"    ⚠ Failed to fetch gauge data: {str(e)}", file=sys.stderr)
+
+            result = {
                 "date": date,
                 "water_coverage_pct": stats["water_coverage_pct"],
                 "output_directory": str(date_dir.absolute()),
@@ -498,7 +724,13 @@ async def get_time_series_water(
                 },
                 "metadata": metadata,
                 "stats": stats
-            })
+            }
+
+            # Add gauge info if available
+            if gauge_info:
+                result["gauges"] = gauge_info
+
+            time_series.append(result)
 
         except Exception as e:
             print(f"Failed to process {date}: {e}", file=sys.stderr)
@@ -523,13 +755,15 @@ async def get_time_series_water(
         }
     }
 
+# DISABLED - SAR incompatible with Prithvi segmentation
+"""
 @mcp.tool
 async def fetch_sar_image(
     bbox: list[float],
     date: str,
     output_prefix: str = ""
 ) -> dict:
-    """
+
     Fetch Sentinel-1 SAR (radar) imagery that works through clouds.
 
     SAR (Synthetic Aperture Radar) uses radar instead of optical light,
@@ -556,7 +790,7 @@ async def fetch_sar_image(
             date="2024-09-27"  # During hurricane
         )
         # Returns SAR imagery that can detect flooding despite cloud cover
-    """
+
     import sys
     from datetime import datetime as dt
 
@@ -625,6 +859,276 @@ async def fetch_sar_image(
             "error": str(e),
             "bbox": bbox,
             "date": date
+        }
+"""
+
+@mcp.tool
+async def get_current_datetime() -> dict:
+    """
+    Get the current date and time.
+
+    Use this tool when you need to know the current date for queries like
+    "what's the water level NOW" or "current flooding status".
+
+    Returns:
+        Dictionary containing:
+        - date: Current date in YYYY-MM-DD format
+        - datetime: Full timestamp in ISO format
+        - timestamp: Unix timestamp
+        - timezone: UTC
+
+    Example:
+        # Get current date for real-time queries
+        now = get_current_datetime()
+        # Returns: {"date": "2025-12-14", "datetime": "2025-12-14T21:30:00Z", ...}
+    """
+    now = datetime.utcnow()
+
+    return {
+        "date": now.strftime("%Y-%m-%d"),
+        "datetime": now.isoformat() + "Z",
+        "timestamp": now.timestamp(),
+        "timezone": "UTC",
+        "year": now.year,
+        "month": now.month,
+        "day": now.day,
+        "hour": now.hour,
+        "minute": now.minute
+    }
+
+@mcp.tool
+async def search_gauges(
+    bbox: list[float],
+    limit: int = 20
+) -> dict:
+    """
+    Search for NWPS water gauges in a geographic area.
+
+    Use this to discover available stream/river gauges for flood monitoring.
+    Returns gauge locations and IDs that can be used with other gauge tools.
+
+    Args:
+        bbox: Bounding box as [min_lon, min_lat, max_lon, max_lat]
+              Example: [-74.02, 40.70, -73.97, 40.75] for Lower Manhattan
+        limit: Maximum number of gauges to return (default: 20)
+
+    Returns:
+        Dictionary containing:
+        - total_found: Number of gauges in the area
+        - returned: Number of gauges actually returned
+        - gauges: List of gauge dictionaries with:
+            - lid: Gauge ID (NWSLI) - use this with other gauge tools
+            - name: Human-readable gauge name
+            - latitude, longitude: Location coordinates
+            - usgsId: USGS site ID (if available, for historical data)
+
+    Example:
+        # Find gauges in NYC area
+        result = search_gauges(bbox=[-74.02, 40.70, -73.97, 40.75])
+        # Returns: {"total_found": 5, "gauges": [{"lid": "BATN6", ...}, ...]}
+    """
+    import sys
+
+    # Validate inputs
+    if len(bbox) != 4:
+        raise ValueError("bbox must have exactly 4 values [min_lon, min_lat, max_lon, max_lat]")
+
+    print(f"Searching for gauges in bbox: {bbox}...", file=sys.stderr)
+
+    try:
+        gauges = nwps_client.search_gauges_by_bbox(bbox, limit=limit)
+
+        print(f"Found {len(gauges)} gauges", file=sys.stderr)
+
+        return {
+            "status": "success",
+            "total_found": len(gauges),
+            "returned": len(gauges),
+            "bbox": bbox,
+            "gauges": gauges
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "bbox": bbox
+        }
+
+@mcp.tool
+async def get_gauge_status(
+    gauge_ids: list[str],
+    include_forecast: bool = True
+) -> dict:
+    """
+    Get current water level and flood status for gauge(s).
+
+    Returns real-time observations, flood category thresholds, and forecasts.
+    Essential for immediate flood risk assessment without satellite imagery.
+
+    Args:
+        gauge_ids: List of gauge IDs (NWSLI) to query
+                  Example: ["BATN6", "LOLT2"]
+        include_forecast: Include forecast data (default: True)
+
+    Returns:
+        Dictionary containing:
+        - total_queried: Number of gauges requested
+        - successful: Number of gauges successfully queried
+        - gauges: List of gauge status dictionaries with:
+            - lid: Gauge ID
+            - name: Gauge name
+            - location: {latitude, longitude}
+            - current_observation: Latest reading
+                - stage_ft: Water level in feet
+                - flow_cfs: Flow rate in cubic feet per second (if available)
+                - valid_time: Timestamp of reading
+            - flood_categories: Thresholds for flood levels
+                - action: Action stage in feet
+                - minor: Minor flood stage
+                - moderate: Moderate flood stage
+                - major: Major flood stage
+            - flood_status: Current status analysis
+                - current_category: "normal", "action", "minor", "moderate", "major"
+                - above_action: Boolean
+                - feet_to_action, feet_to_minor, etc.: Distance to each level
+            - forecast: Forecast information (if include_forecast=True)
+                - peak_stage: Expected peak water level
+                - peak_time: When peak expected
+                - trend: "rising", "falling", or "steady"
+
+    Example:
+        # Check current status of NYC gauge
+        status = get_gauge_status(gauge_ids=["BATN6"])
+        # Returns current reading, flood status, and forecast
+
+        # Check if flooding
+        if status['gauges'][0]['flood_status']['current_category'] == 'major':
+            print("Major flooding detected!")
+    """
+    import sys
+
+    if not gauge_ids:
+        raise ValueError("gauge_ids must contain at least one gauge ID")
+
+    print(f"Getting status for {len(gauge_ids)} gauge(s)...", file=sys.stderr)
+
+    results = []
+    errors = []
+
+    for gauge_id in gauge_ids:
+        try:
+            status = nwps_client.get_flood_status(gauge_id)
+
+            # Remove forecast if not requested
+            if not include_forecast:
+                status.pop('forecast', None)
+
+            results.append(status)
+            print(f"  ✓ {gauge_id}: {status['flood_status']['current_category']}", file=sys.stderr)
+
+        except Exception as e:
+            error_msg = f"{gauge_id}: {str(e)}"
+            errors.append(error_msg)
+            print(f"  ✗ {error_msg}", file=sys.stderr)
+
+    return {
+        "status": "success" if results else "error",
+        "total_queried": len(gauge_ids),
+        "successful": len(results),
+        "failed": len(errors),
+        "gauges": results,
+        "errors": errors if errors else None
+    }
+
+@mcp.tool
+async def get_gauge_timeseries(
+    gauge_id: str,
+    start_date: str,
+    end_date: str
+) -> dict:
+    """
+    Get historical water level data for change detection and analysis.
+
+    Fetches historical data from USGS (river gauges) or NOAA Tides & Currents
+    (coastal gauges). Useful for comparing current conditions to historical baseline
+    or analyzing past flood events.
+
+    Args:
+        gauge_id: Gauge ID (NWSLI) - e.g., "LOLT2", "BATN6"
+        start_date: Start date in YYYY-MM-DD format (e.g., "2024-01-01")
+        end_date: End date in YYYY-MM-DD format (e.g., "2024-01-07")
+
+    Returns:
+        Dictionary containing:
+        - status: "success" or "error"
+        - source: "usgs", "noaa", or "unavailable"
+        - gauge_id: Input gauge ID
+        - period: {start, end} dates
+        - data: Historical time series data
+            For USGS: Multiple series (stage, flow) with values and statistics
+            For NOAA: Single series (water level) with values and statistics
+        - statistics: Peak, mean, min, max values
+
+    Example:
+        # Get historical data for river gauge
+        hist = get_gauge_timeseries(
+            gauge_id="LOLT2",
+            start_date="2024-01-01",
+            end_date="2024-01-07"
+        )
+        # Returns USGS data with stage and flow measurements
+
+        # Get historical data for coastal gauge
+        hist = get_gauge_timeseries(
+            gauge_id="BATN6",
+            start_date="2024-09-15",
+            end_date="2024-09-20"
+        )
+        # Returns NOAA water level data
+    """
+    import sys
+
+    print(f"Fetching historical data for {gauge_id} ({start_date} to {end_date})...", file=sys.stderr)
+
+    try:
+        result = nwps_client.get_historical_data(gauge_id, start_date, end_date)
+
+        source = result.get('source', 'unknown')
+        print(f"  Data source: {source.upper()}", file=sys.stderr)
+
+        if 'error' in result:
+            print(f"  ✗ Error: {result['error']}", file=sys.stderr)
+            return {
+                "status": "error",
+                **result
+            }
+        elif source == 'unavailable':
+            print(f"  ⚠ Historical data not available", file=sys.stderr)
+            return {
+                "status": "unavailable",
+                **result
+            }
+        else:
+            # Count data points
+            if source == 'usgs':
+                total_points = sum(s.get('data_points', 0) for s in result.get('time_series', []))
+            else:  # noaa
+                total_points = result.get('data_points', 0)
+
+            print(f"  ✓ Retrieved {total_points} data points", file=sys.stderr)
+
+            return {
+                "status": "success",
+                **result
+            }
+
+    except Exception as e:
+        print(f"  ✗ Error: {str(e)}", file=sys.stderr)
+        return {
+            "status": "error",
+            "gauge_id": gauge_id,
+            "error": str(e)
         }
 
 if __name__ == "__main__":
