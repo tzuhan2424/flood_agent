@@ -1,6 +1,6 @@
 # Flood Detection AI System
 
-Real-time flood detection using **satellite imagery**, **AI water segmentation**, and **ground sensor validation** in a conversational multi-agent interface.
+Flood detection using **satellite imagery**, **AI water segmentation**, and **ground sensor validation** in a conversational multi-agent interface.
 
 Floods are a constant threat in tropical countries like Taiwan, and when I saw my friend's posts on Instagram about the recent devastating floods in Sri Lanka, I knew AI had to offer a better solution. That personal urgency inspired me to build this system. It uses satellite imagery and an advanced AI water segmentation model to instantly map flood zones, then quickly validates those findings with ground sensors.
 
