@@ -2,6 +2,10 @@
 
 Real-time flood detection using **satellite imagery**, **AI water segmentation**, and **ground sensor validation** in a conversational multi-agent interface.
 
+
+![Flood Detection System Architecture](images/flood_arch.png)
+
+
 ## What This Does
 
 Ask in natural language:

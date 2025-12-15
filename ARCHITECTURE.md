@@ -5,6 +5,7 @@
 Real-time flood detection using **Google ADK multi-agent framework**, **Sentinel-2 satellite imagery**, **Prithvi AI water segmentation**, and **NOAA/USGS NWPS gauge data**.
 
 ## Architecture Diagram
+![Flood Detection System Architecture](images/flood_arch.png)
 
 ```
 User Query (Natural Language)
